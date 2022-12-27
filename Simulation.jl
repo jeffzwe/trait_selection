@@ -15,39 +15,38 @@ using ImplicitGlobalGrid
 
 using HypothesisTest
 using Statistics
+using Distributions
+using StatsPlots
+using StatsBase
 
 
 
 # PARALLELSTENCIL EXPLICIT INDICES WHEN CALLING @parallel (1:size(A,1), 1:size(A,3)) bc_y!(A)
 # SEE IF PARALLELSTENCIL CAN RUN IN 1D !!!!
 
-
-
 # orig_gf = convert.(Int64,DataFrame(Arrow.Table( "prep_files/lookup_tab.feather")))
 
-# println(first(orig_gf, 5))
 
-# traits = convert.(Float64, DataFrame(Arrow.Table("prep_files/trait_tab_norm.feather")))
 
-# println(first(traits, 5))
 
-# ll = DataFrame(Arrow.Table("prep_files/lat_long_mat.feather"))
+# species with traits
+traits = DataFrame(CSV.File("Traits.csv"))
+n_spec = size(traits, 1)
 
-# println(first(ll, 22))
-
-# println(ll[22, [2, 1]])
-
-# plots = sort(unique(orig_gf.plot_id[orig_gf.use_plot.==1]))
-# println(first(plots, 5))
+# trait combinations we want to compare
+trait_comb = []
+n_trait_comb = size(trait_comb)
 
 # max ammount of species we want to compare per plot
-n_samp_species = 
+n_samp_species = 1000
 
 # stepsize of species we want to compare at a time
-scaling_species[] = 
+p = LogUniform(1,1000)
+scal_spec = unique(sort(round.(rand(p,100))))
+n_scal_spec = size(scal_spec)
 
-# loading species from data
-species_in =
+# loading species for mapping from data
+spec_map = DataFrame(CSV.File("Comm_map.csv"))
 
 # abundancy matrix (in case i even need one)
 abund =
@@ -59,40 +58,51 @@ grid_raster_sp = sparse(grid_raster)
 grid_raster_sp_indices = findall(!iszero, grid_raster_sp)
 nindices = size(grid_raster_sp_indices,1)
 
-
+# Simulation MAYBE MAKE THIS A VECTOR OF VECTORS INSTEAD??????
 grid_species = zeros(Float32, nindices, n_samp_species+2)
 grid_species[:, 1] = getindex.(grid_raster_sp_indices, 1)
 grid_species[:, 2] = getindex.(grid_raster_sp_indices, 2)
 
-# this size depends on how many metric calculations we want to do???????
-grid_results = zeros(Float32, nindices, size(scaling_species)+2)
-grid_species[:, 1] = getindex.(grid_raster_sp_indices, 1)
-grid_species[:, 2] = getindex.(grid_raster_sp_indices, 2)
+# Since for every trait_comb we do all the scalings
+grid_res_hull = zeros(Float32, nindices,(n_trait_comb*n_scal_spec)+2)
+grid_res_hull[:, 1] = getindex.(grid_raster_sp_indices, 1)
+grid_res_hull[:, 2] = getindex.(grid_raster_sp_indices, 2)
+
+grid_res_rao = zeros(Float32, nindices,(n_trait_comb*n_scal_spec)+2)
+grid_res_rao[:, 1] = getindex.(grid_raster_sp_indices, 1)
+grid_res_rao[:, 2] = getindex.(grid_raster_sp_indices, 2)
 
 
-# fill grid_species
-@parallel (1:nindices) calc_null_mod(grid_species, species_in, n_samp_species, frec_tab)
+# fill grid_species DO WE HAVE A FREC_TAB?????????????
+@parallel (1:nindices, 1:1) calc_null_mod(grid_species, n_spec, n_samp_species, frec_tab)
 # fill grid_results
-@parallel (1:nindices) calc_metrics(grid_species, traits, trait_comb, results, abund, scaling_species)
+@parallel (1:nindices, 1:n_trait_comb) calc_metrics(grid_species, traits, trait_comb, n_trait_comb, grid_res_hull, grid_res_rao, scal_spec, n_scal_spec)
 
 # do some fancy analysis on these results
 
 # map back to map and plot
 
-@parallel_indices (ix) function calc_metrics(grid_species, traits, trait_comb, results, abund, scaling_species)
-	results[somewhat undtil somewhere] = calc_rao()
-	results[somewhere until somewhat different] = calc_chull()
+@parallel_indices (grid_idx, combo) function calc_metrics(grid_species, traits, trait_comb, n_trait_comb, grid_res_hull, grid_res_rao, scal_spec, n_scal_spec)
+	# make new matrix with all species in grid cell and all there traits
+	n_species = length(grid_species[grid_idx])
+	temp_spec_traits = zeros(n_species, length(trait_comb[combo]))
+	for i in 1:n_species
+		temp_spec_traits[i,:] = traits[(grid_species[grid_idx][2+i]), trait_comb[combo]]   #this should get subset of traits of species
+	end
+	# index shift based on which scaling & trait combo we're looking at
+	grid_res_hull[grid_idx,2+(combo-1)*n_scal_spec:2+combo*n_scal_spec] = calc_chull(grid_idx, grid_species, scal_spec, n_scal_spec, temp_spec_traits)
+	grid_res_rao[grid_idx,2+(combo-1)*n_scal_spec:2+combo*n_scal_spec] = calc_rao(grid_idx, grid_species, scal_spec, n_scal_spec, temp_spec_traits)
 end
 
 
 # Goal of this function is to perform the random sampling for the null model and fill the matrix grid_species
-@parallel_indices (ix) function calc_null_mod(grid_species, species_in, n_samp_species, frec_tab)
-	grid_species[ix, 3:end] =  sample(species_in.id, frec_tab, n_samp_species; replace=false, ordered=true)
+@parallel_indices (ix, iy) function calc_null_mod(grid_species, n_spec, n_samp_species, frec_tab)
+	grid_species[ix, 3:end] =  sample(collect(1:n_spec), frec_tab, n_samp_species; replace=false, ordered=true)
 end
 
 
 
-function calc_rao(tmp_traits::AbstractArray{Float64}, tmp_abund::Vector{Float64}, tmp_abund_mat::Matrix{Float64}, sub_traits::Matrix{Float64}, scaling::Vector{Float64})
+function calc_rao(grid_idx, grid_species, scal_spec, n_scal_spec, temp_spec_traits)
 	
 	# subtraits Dimension 1 = amount of subtrait configs, Dimension 2 = subtrait configs
 
@@ -101,7 +111,7 @@ function calc_rao(tmp_traits::AbstractArray{Float64}, tmp_abund::Vector{Float64}
 	# initialize the outcomes
 	outcomes = zeros(Float64, size(sub_traits, 1), 16 * size(scaling)) 
 	# if we have at least one species
-	if size(tmp_abund, 1) > 1
+	if grid_species[grid_idx, 3] != 0
 		# pairwise distance matrix
 		d1 = pairwise(SqEuclidean(), transpose(tmp_traits), dims=2)
 
@@ -155,23 +165,25 @@ end
 
 
 
-function calc_chull(tmp_traits::Matrix{Float64}, tmp_abund_mat::Matrix{Float64})
+function calc_chull(grid_idx, grid_species, scal_spec, n_scal_spec, temp_spec_traits)
 
 	# initialize the output
-	outvec = zeros(Float64, 2)
-	ab_mat = tmp_traits .* tmp_abund_mat	#MAYBE?? Chamer das überhaupt so mache wenn mer kei Distance Matrix het?
-	
-	v = vrep(tmp_traits)
-	v_ab = vrep(ab_mat)
+	outvec = zeros(Float64, n_scal_spec)
+	#ab_mat = tmp_traits .* tmp_abund_mat	#MAYBE?? Chamer das überhaupt so mache wenn mer kei Distance Matrix het?
+	for i in 1:n_scal_spec
+		
+		v = vrep(temp_spec_traits[1:scal_spec[i], :])
+		#v_ab = vrep(ab_mat)
 
-	p_qhull = polyhedron(v, QHull.Library())
-	# removevredundancy!(p_qhull)		#bruchts demfall ned wueki
+		p_qhull = polyhedron(v, QHull.Library())
+		# removevredundancy!(p_qhull)		#bruchts demfall ned wueki
 
-	p_ab_hull = polyhedron(v_ab, QHull.Library())
-	# removevredundancy!(p_ab_hull)	#bruchts demfall ned wueki
+		#p_ab_hull = polyhedron(v_ab, QHull.Library())
+		# removevredundancy!(p_ab_hull)	#bruchts demfall ned wueki
 
-	outvec[1] = volume(p_hull)
-	outvec[2] = volume(p_ab_hull)
+		outvec[i] = volume(p_hull)
+		#outvec[2] = volume(p_ab_hull)
+	end
 
 	return outvec
 
