@@ -62,7 +62,7 @@ For more detailed information and analysis of the results please refer to the th
 
 ### Note ###
 
-As a few files are very large they're not currently on this repository. This includes community information and diversity metrics of each trait combination for the world grid. Additionally, only a few plots were added as these can be easily reproduced fully by running plots.jl.
+As a few files are very large or they're not currently on this repository. This includes community data, trait data, trait correlation data and diversity metrics of each trait combination for the world grid. Additionally, only a few plots were added as these can be easily reproduced fully by running plots.jl.
 
 
 
